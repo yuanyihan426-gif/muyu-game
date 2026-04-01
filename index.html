@@ -1891,11 +1891,11 @@
     );
 
     ws.onopen = () => {
-      // 加入 channel
+      // 加入 channel（self:true 让自己也能收到自己发的消息，方便调试）
       ws.send(JSON.stringify({
         topic: `realtime:${ROOM}`,
         event: 'phx_join',
-        payload: { config: { broadcast: { self: false }, presence: { key: MY_ID } } },
+        payload: { config: { broadcast: { self: true } } },
         ref: '1'
       }));
       // 心跳
@@ -1904,17 +1904,20 @@
           ws.send(JSON.stringify({ topic: 'phoenix', event: 'heartbeat', payload: {}, ref: 'hb' }));
         }
       }, 25000);
-      // 广播自己上线
-      setTimeout(() => broadcastPresence(), 500);
+      // 加入后广播自己上线，并定期重播（让后来者知道我在）
+      setTimeout(() => broadcastPresence(), 800);
+      setInterval(() => broadcastPresence(), 8000);
       addChatMsg(null, null, null, '已连接，正在寻找同修...', true);
     };
 
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.event === 'broadcast' && msg.payload?.type) {
-          const { type, userId, avatar, color, merit: m, text } = msg.payload;
-          if (userId === MY_ID) return;
+        // Supabase Realtime broadcast 实际结构：
+        // { event: 'broadcast', payload: { event: 'msg', payload: { type, userId, ... } } }
+        if (msg.event === 'broadcast' && msg.payload?.payload?.type) {
+          const { type, userId, avatar, color, merit: m, text } = msg.payload.payload;
+          if (userId === MY_ID) return; // 忽略自己发的
 
           if (type === 'presence') {
             const isNew = !onlineUsers[userId];
@@ -1922,8 +1925,6 @@
             updateUsersList();
             if (isNew) {
               addChatMsg(null, null, null, `${avatar} 新的修行者到来`, true);
-              // 回应自己的存在
-              broadcastPresence();
             }
           } else if (type === 'hit') {
             onlineUsers[userId] = { ...(onlineUsers[userId]||{}), id: userId, avatar, color, merit: m };
@@ -1938,7 +1939,7 @@
             if (u) addChatMsg(null, null, null, `${u.avatar} 修行者离去`, true);
           }
         }
-      } catch(err) {}
+      } catch(err) { console.warn('[muyu ws]', err); }
     };
 
     ws.onclose = () => {
@@ -1948,13 +1949,13 @@
       setTimeout(connectRealtime, 5000);
     };
 
-    // 广播函数
+    // 广播函数：payload 放在 payload.payload 里，符合 Supabase Realtime 规范
     function broadcast(payload) {
       if (ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({
         topic: `realtime:${ROOM}`,
         event: 'broadcast',
-        payload: { type: 'broadcast', event: 'msg', payload },
+        payload: { event: 'msg', payload },
         ref: Math.random().toString()
       }));
     }
@@ -2008,10 +2009,8 @@
     if (e.key === 'Enter') sendChat();
   });
 
-  // 首次点击后连接（需要用户交互）
-  document.addEventListener('click', () => {
-    if (!window._muyuBroadcast) connectRealtime();
-  }, { once: true });
+  // 页面加载后立即连接
+  connectRealtime();
 
 </script>
 </body>
